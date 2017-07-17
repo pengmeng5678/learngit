@@ -1,0 +1,141 @@
+package com.qihan.childteach.util;
+
+import com.alibaba.sdk.android.oss.ClientConfiguration;
+import com.alibaba.sdk.android.oss.ClientException;
+import com.alibaba.sdk.android.oss.OSSClient;
+import com.alibaba.sdk.android.oss.ServiceException;
+import com.alibaba.sdk.android.oss.callback.OSSCompletedCallback;
+import com.alibaba.sdk.android.oss.callback.OSSProgressCallback;
+import com.alibaba.sdk.android.oss.common.auth.OSSCredentialProvider;
+import com.alibaba.sdk.android.oss.common.auth.OSSPlainTextAKSKCredentialProvider;
+import com.alibaba.sdk.android.oss.internal.OSSAsyncTask;
+import com.alibaba.sdk.android.oss.model.ObjectMetadata;
+import com.alibaba.sdk.android.oss.model.PutObjectRequest;
+import com.alibaba.sdk.android.oss.model.PutObjectResult;
+import com.qihan.childteach.app.MyApplication;
+
+/**
+ * 创建者     彭猛
+ * 创建时间   2017/5/5 15:01
+ * 描述	     TODO
+ * 更新者     Author
+ * 更新时间   Date
+ * 更新描述   TODO
+ */
+public class OSSUtil {
+    public static final String TAG = "QIHAN_SERVER";
+    private static String endpoint = "oss-cn-shenzhen.aliyuncs.com";
+    // accessKey
+    private static String accessKeyId = "LTAIoFk711AQZpyR";
+    private static String accessKeySecret = "fMtm3FMFl3FgdJi5VQYIaIZixqTC4B";
+
+    // 空间
+    private static String bucketName = "internet-app";
+    private static String objectKey = "qihanObjectKey";
+    public long mTotalSize;
+    // 文件存储目录
+    private static String defaultFiledir = "data/";
+    private static OSSClient sOss;
+    private static OSSAsyncTask sTask;
+    private static OSSUtil instance;
+    public static OSSUtil getInstance() {
+        if (null == instance) {
+            instance = new OSSUtil();
+        }
+        return instance;
+    }
+    public  void init(){
+        // 明文设置secret的方式建议只在测试时使用，更多鉴权模式请参考后面的访问控制章节
+        OSSCredentialProvider credentialProvider = new OSSPlainTextAKSKCredentialProvider(accessKeyId, accessKeySecret);
+        ClientConfiguration conf = new ClientConfiguration();
+        conf.setConnectionTimeout(15 * 1000); // 连接超时，默认15秒
+        conf.setSocketTimeout(15 * 1000); // socket超时，默认15秒
+        conf.setMaxConcurrentRequest(5); // 最大并发请求书，默认5个
+        conf.setMaxErrorRetry(2); // 失败后最大重试次数，默认2次
+        sOss = new OSSClient(MyApplication.getContext(), endpoint, credentialProvider, conf);
+    }
+
+    public  void uploadLocalFile(String uploadFilePath, final String objectKey, IUploadLocalFileListener listener){
+        mIUploadLocalFileListener = listener;
+        // 构造上传请求
+        PutObjectRequest put = new PutObjectRequest(bucketName, objectKey, uploadFilePath);
+        //上传到文件目录
+        ObjectMetadata metadata = new ObjectMetadata();
+        // 指定Content-Type
+        metadata.setContentType("application/octet-stream");
+        // user自定义metadata
+        metadata.addUserMetadata("x-oss-meta-name1", "data/");
+        put.setMetadata(metadata);
+
+        // 异步上传时可以设置进度回调
+        put.setProgressCallback(new OSSProgressCallback<PutObjectRequest>() {
+            @Override
+            public void onProgress(PutObjectRequest request, long currentSize, long totalSize) {
+//                LogUtils.Logd(TAG, "currentSize: " + currentSize + " totalSize: " + totalSize);
+                mTotalSize = totalSize;
+            }
+        });
+        LogUtils.Logd(TAG,"上传文件总大小:"+mTotalSize+"Byte");
+        // 请求异常
+        // 本地异常如网络异常等
+        // 服务异常
+        sTask = sOss.asyncPutObject(put, new OSSCompletedCallback<PutObjectRequest, PutObjectResult>() {
+            @Override
+            public void onSuccess(PutObjectRequest request, PutObjectResult result) {
+//                LogUtils.Logd(TAG   , "UploadSuccess");
+//                LogUtils.Logd(TAG   , "etag = "+result.getETag());
+//                LogUtils.Logd(TAG   , "RequestId"+result.getRequestId());
+                String url = getUrl(objectKey);
+                if(url != null){
+                    mIUploadLocalFileListener.uploadSuccess(url);
+                }else{
+                    mIUploadLocalFileListener.uploadFail("402","文件上传失败");
+                }
+            }
+            @Override
+            public void onFailure(PutObjectRequest request, ClientException clientExcepion, ServiceException serviceException) {
+                // 请求异常
+                if (clientExcepion != null) {
+                    // 本地异常如网络异常等
+                    clientExcepion.printStackTrace();
+                }
+                if (serviceException != null) {
+                    // 服务异常
+                    LogUtils.Logd(TAG   ,"ErrorCode="+serviceException.getErrorCode());
+                    LogUtils.Logd(TAG   ,"RequestId="+serviceException.getRequestId());
+                    LogUtils.Logd(TAG   ,"HostId="+serviceException.getHostId());
+                    LogUtils.Logd(TAG   ,"RawMessage="+serviceException.getRawMessage());
+                    mIUploadLocalFileListener.uploadFail(serviceException.getErrorCode(),serviceException.getRawMessage());
+                }
+            }
+        });
+        // task.cancel(); // 可以取消任务
+        // task.waitUntilFinished(); // 可以等待任务完成
+    }
+    public  String getUrl(String key) {
+        // 设置URL过期时间为10年 3600l* 1000*24*365*10
+        String url = null;
+        try {
+            url = sOss.presignConstrainedObjectURL(bucketName, key, 1000*60*60*24*365*10);
+            LogUtils.Logd(TAG,"获取到OSS的Url："+url);
+        } catch (Exception e) {
+            LogUtils.Loge(TAG,"获取到OSS的Url异常："+e.toString());
+            e.printStackTrace();
+        }
+
+        if (url != null) {
+            return url.toString();
+        }
+        return null;
+    }
+    public void cancel(){
+        if(sTask != null){
+            sTask.cancel();
+        }
+    }
+    public IUploadLocalFileListener mIUploadLocalFileListener;
+    public interface IUploadLocalFileListener{
+        void uploadSuccess(String requestId);
+        void uploadFail(String Errocode,String msg);
+    }
+}

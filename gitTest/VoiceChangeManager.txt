@@ -1,0 +1,228 @@
+package com.qihan.childteach.util;
+
+import android.os.Environment;
+
+import com.qihan.childteach.app.MyApplication;
+import com.qihan.childteach.config.Constants;
+import com.qihan.childteach.model.entity.VoiceChangeBean;
+import com.qihan.childteach.voice.QiHanVoiceManager1;
+
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+
+import github.com.stonevoicer.VoicerUtil;
+
+/**
+ * @Module :
+ * @Comments : 描述
+ * @Author : 彭猛
+ * @Modified:
+ * 2017-6-20: 实现基本功能
+ */
+public class VoiceChangeManager {
+	public static final String TAG = "VOICE_CHANGE";
+	private LinkedBlockingQueue<VoiceChangeBean> voiceChangeQueue = new LinkedBlockingQueue<>();
+	private VoiceChangeThread mVoiceChangeThread = null;
+	private static VoiceChangeManager manager = new VoiceChangeManager();
+	private LinkedHashMap<Integer,LinkedList<VoiceChangeBean>> map = new LinkedHashMap<>();
+	private boolean isStop;
+	private boolean isProcessGenerateFile;
+	private int mGenerateFileNum;
+	private boolean isPauseChangeVoice;
+
+	private VoiceChangeManager() {
+
+	}
+
+	public static VoiceChangeManager getInstance() {
+		return manager;
+	}
+
+	/**
+	 * 获取变声的文本队列
+	 * @Description : getVoiceChangeQueue
+	 * @return
+	 */
+	public BlockingQueue<VoiceChangeBean> getVoiceChangeQueue() {
+		if(voiceChangeQueue == null){
+			voiceChangeQueue = new LinkedBlockingQueue<VoiceChangeBean>();
+		}
+		return voiceChangeQueue;
+	}
+
+	/**
+	 * @desc 摸头时可以调用这个方法，摸一下暂停，再摸一下继续变声
+	 */
+	public void pauseOrGoOn(){
+		if(mVoiceChangeThread == null){
+			LogUtils.Logw(TAG,"暂停或继续变声失败,线程为空");
+			return;
+		}
+		if(mVoiceChangeThread.getPauseState()){
+			goOnChangeVoice();
+		}else{
+			pauseChangeVoice();
+		}
+	}
+
+	private void goOnChangeVoice() {
+		if (mVoiceChangeThread != null){
+            LogUtils.Logd(TAG,"继续变声");
+            mVoiceChangeThread.setPauseState(false);
+        }else{
+            LogUtils.Logw(TAG,"暂停变声失败,线程为空");
+        }
+	}
+
+	private void pauseChangeVoice() {
+		if (mVoiceChangeThread != null){
+            LogUtils.Logd(TAG,"暂停变声");
+            mVoiceChangeThread.setPauseState(true);
+        }else{
+            LogUtils.Logw(TAG,"暂停变声失败,线程为空");
+        }
+	}
+
+	/**
+	 * @desc  用于停止变声,但会把当前这句话说完才能停止
+	 * 		  退出Activity时要记得调用这个方法
+	 * @param type	预留参数，可默认传-1
+	 */
+	public void stopChangeVoice(int type){
+		LogUtils.Logd(TAG,"停止变音");
+		LogUtils.Logd(Constants.CREATE_EDIT,"停止变音");
+		if (mVoiceChangeThread != null){
+			mVoiceChangeThread.setStop(true);
+		}else{
+			LogUtils.Logw(TAG,"stopChangeVoice时 变声线程为空");
+		}
+
+		if(voiceChangeQueue != null){
+			voiceChangeQueue.clear();
+		}else{
+			LogUtils.Logw(TAG,"stopChangeVoice时 队列为空");
+		}
+		isStop = true;
+		voiceChangeQueue = null;
+		mVoiceChangeThread = null;
+		mGenerateFileNum = 0;
+		num = 0;
+		isProcessGenerateFile = false;
+		boolean deleteFilesInDir = FileUtils.deleteFilesInDir(Environment.getExternalStorageDirectory() + "/msc/tts");
+		LogUtils.Logd("VOICE_CHANGE","删除文件夹是否成功:"+deleteFilesInDir);
+//		String path = "file:///android_asset/xiaoxin.wav";
+		VoicerUtil.pause(1);
+	}
+	int putNum;
+
+	/**
+	 * @param list	list存放的每个bean中必须包含内容(content)和角色(tone)
+	 * @param listener 传入这个参数可以回调<变声失败>和<变声到最后一个文件>的状态
+	 */
+	public void startChangeVoice(LinkedList<VoiceChangeBean> list, OnVoiceManagerListener listener){
+		mOnVoiceManagerListener = listener;
+		for (int i = 0; i < list.size(); i++) {
+			LogUtils.Logd("VOICE_CHANGE","新增list:"+list.get(i).toString());
+		}
+		if(list == null)
+			return;
+		if (mVoiceChangeThread == null) {
+			mVoiceChangeThread = new VoiceChangeThread(1);
+			mVoiceChangeThread.start();
+		}
+		if(mOnVoiceManagerListener != null && mVoiceChangeThread != null){
+			mVoiceChangeThread.setListener(mOnVoiceManagerListener);
+		}
+		if (mVoiceChangeThread != null){
+			mVoiceChangeThread.setStop(false);
+			mVoiceChangeThread.setPauseState(false);
+		}
+		LogUtils.Logd("VOICE_CHANGE","list 大小:"+list.size());
+		if(!isProcessGenerateFile){
+			mGenerateFileNum = 0;
+			isStop = false;
+			generateAllFile(list,list.get(0));
+		}else{
+			LogUtils.Logd("VOICE_CHANGE","当前正在合成文件,将新list存入map");
+			//如果正在递归生成文件就暂时不接受新数据
+			ToastUtil.showShort(MyApplication.getContext(),"正在处理变声中,请稍等");
+//			map.put(putNum++,list);
+			if(mOnVoiceManagerListener != null){
+				mOnVoiceManagerListener.startChangeVoiceFaild(0,"正在处理变声中,请稍等");
+			}
+		}
+	}
+
+	int CurrentListNum;
+	int num;
+	private void generateAllFile(final LinkedList<VoiceChangeBean> list, final VoiceChangeBean operationEntity) {
+		if(isStop){
+			LogUtils.Logi(TAG,"stopChangeVoice后停止生成文件");
+			return;
+		}
+		++mGenerateFileNum;//用于记录处理到list中的第几个对象了
+		num++;
+		if(num >=50)
+			num = 0;//生成合成文件的序号
+		operationEntity.num = num;
+		isProcessGenerateFile = true;
+				String synthesiseFilePath = getSynthesiseFile(num);
+				LogUtils.Logd("VOICE_CHANGE","即将变声音调"+operationEntity.tone+"即将变声内容："+operationEntity.content+",合成指定路径："+synthesiseFilePath+",当前线程名:"+Thread.currentThread().getName());
+				//连续合成多个文件，合成的速度较快
+				int resultCode = QiHanVoiceManager1.getDefault().synthesizeToUri(operationEntity.content, synthesiseFilePath,operationEntity.tone, new QiHanVoiceManager1.MySynthesiseListener() {
+					@Override
+					public void synthesiseCompleted() {
+						try {
+							voiceChangeQueue.put(operationEntity);
+						//递归退出条件:1.list中所有数据都已经合成文件;2.外部控制停止
+							if(mGenerateFileNum <list.size() && !isStop){
+								MyApplication.getMainThreadHandler().postDelayed(new Runnable() {
+									@Override
+									public void run() {
+										LogUtils.Logd(TAG,"mGenerateFileNum = "+mGenerateFileNum);
+										generateAllFile(list, list.get(mGenerateFileNum));
+									}
+								},1000);
+							}else{
+								LogUtils.Logd("VOICE_CHANGE","所有文本都已生成文件 isStop = "+isStop+",mGenerateFileNum = "+mGenerateFileNum);
+								isProcessGenerateFile = false;
+								mGenerateFileNum = 0;
+								/*if(CurrentListNum > 0){
+									int key = CurrentListNum - 1;
+									map.remove(key);
+									LogUtils.Logd(TAG,"CurrentListNum > 0,移除已经处理(生成文件)过的第"+key+"个list");
+								}
+								if(map.size() >0){
+									int key = ++CurrentListNum;
+									int i = key - 1;
+									LogUtils.Logd(TAG,"map.size() >0,处理(文件生成)第"+i+"个list");
+									generateAllFile(map.get(key-1),map.get(key-1).get(0));
+								}else{
+									LogUtils.Logd(TAG,"map.size() >0条件不成立");
+								}*/
+							}
+						} catch (InterruptedException e) {
+							LogUtils.Logd("VOICE_CHANGE","generateAllFile InterruptedException "+ e.toString());
+							e.printStackTrace();
+						} catch (Exception e) {
+							LogUtils.Logd("VOICE_CHANGE","generateAllFile Exception "+ e.toString());
+							e.printStackTrace();
+						}
+					}
+				});
+	}
+
+	private String getSynthesiseFile(int i) {
+		return QiHanVoiceManager1.getDefault().getSynthesiseFile(i);
+	}
+
+	/**
+	 * @param listener 调用这个监听一定要在startChangeVoice之前，不然ChangeVoiceEnd不会回调
+	 */
+	public void setOnVoiceManagerListener(OnVoiceManagerListener listener){
+		mOnVoiceManagerListener = listener;
+	}
+	OnVoiceManagerListener mOnVoiceManagerListener ;
+}

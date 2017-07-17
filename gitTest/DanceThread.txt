@@ -1,0 +1,324 @@
+package com.qihan.childteach.util;
+
+import android.os.SystemClock;
+
+import com.qihan.childteach.app.MyApplication;
+import com.qihan.childteach.config.Constants;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import cn.qihan.www.actionlibrary.action.QiHanActionManager;
+
+/**
+ * 创建者     彭猛
+ * 创建时间   2017/5/17 10:54
+ * 描述       new这个线程对象时，如果不是循环执行动作,请将传入构造方法中的danceType设置为0
+ *            如果要循环执行舞蹈动作(danceType设置为1)，请保证new了线程后，退出前调用setStop()方法,如果不停止会造成动作无法停止的灾难性后果
+ * 更新者     Author
+ * 更新时间   Date
+ * 更新描述   TODO
+ */
+public class DanceThread extends Thread {
+
+    public int mDanceType;
+    public String mDanceMode;
+    private boolean mWheelIsAction;
+    private int mWheelDirection;
+    private int mWheelSpeed;
+    private int mWheelAngle;
+    int msleep = 20;
+
+    /**
+     * @param danceType 0表示不循环执行但执行后退动作(小程序单独按前后左右键)，1表示循环执行(跳舞)，2表示不循环执行也不后退(推送的舞蹈或组动作)
+     * @param danceJson 跳舞的动作组json,如果只执行一个动作，可按规则只传入一组中的一个动作命令
+     */
+    public DanceThread(int danceType, String danceJson){
+        mDanceType = danceType;
+        mDanceMode = danceJson;
+        LogUtils.Logd(TAG,"get DanceType:"+mDanceType);
+        LogUtils.Logd(TAG,"get mDanceMode:"+mDanceMode);
+        mIsStop = false;
+        outControlStart = true;
+        isStart = true;
+        MyApplication.getSPUtil().putBoolean(Constants.ROBOT_IS_DANCING,true);
+    }
+
+    public DanceThread(){
+
+    }
+    private static final String TAG = "DANCE";
+    public  volatile boolean mIsStop = false;//为true时停止跳舞
+    public  volatile boolean isStart = true; //为false时继续跳舞
+    public  volatile boolean outControlStart = true;//为false时停止跳舞
+
+    Object lock = new Object();
+    public void setStop(boolean isStop) {//控制停止
+        LogUtils.Logw(TAG,"setStop:"+isStop);
+        MyApplication.getSPUtil().putBoolean(Constants.ROBOT_IS_DANCING,false);
+        this.mIsStop = isStop;
+        QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)0,(byte)2,(byte)0);
+        QiHanActionManager.getDefault().resetHandAction();
+        QiHanActionManager.getDefault().resetLedLight();
+        QiHanActionManager.getDefault().resetHeadAction();
+        interrupt();
+        boolean interrupted = isInterrupted();
+        LogUtils.Logi(TAG,"线程是否退出成功"+interrupted);
+    }
+
+    public void setStart(boolean isStart) {//睡眠时间控制暂停与继续
+        this.isStart = isStart;
+    }
+    /**
+     * @param isStart 为true时继续，为false时暂停
+     */
+    public void humanSetStart(boolean isStart) {//人为摸头控制暂停与继续
+        LogUtils.Logd(TAG,"人为控制机器人是否暂停"+!isStart+",objectID"+this.hashCode()+",ThreadName="+Thread.currentThread().getName());
+        this.outControlStart = isStart;
+        LogUtils.Logd(TAG,"outControlStart = "+outControlStart+",object id = "+outControlStart);
+        if(outControlStart){
+            synchronized (lock) {
+                try {
+                    lock.notify();
+                    LogUtils.Logd(TAG,"humanSetStart ,lock.notify()");
+                } catch (Exception e) {
+                    LogUtils.Logd(TAG,"lock.notify() Exception"+e.toString());
+                    e.printStackTrace();
+                }
+            }
+        }else{
+            //暂停就关灯光
+            QiHanActionManager.getDefault().resetLedLight();
+        }
+    }
+
+    @Override
+    public void run() {
+        runningDance();
+    }
+
+    private void runningDance() {
+        while (!mIsStop) {
+            JSONObject js = null;
+            try {
+                js = new JSONObject(mDanceMode);
+            } catch (JSONException e) {
+                LogUtils.Logd(TAG,"while JSONException"+  e.getMessage());
+                mIsStop = true;
+                return;
+            } finally {
+                if (js == null) {
+                    LogUtils.Logd(TAG, "js == null");
+                    mIsStop = true;
+                }
+            }
+            try {
+                JSONArray jsArray = js.optJSONArray("operation");
+                if (jsArray != null) {
+                    for (int i = 0; i < jsArray.length(); i++) {
+                            if (!isStart || !outControlStart) {//睡眠时间和外部都可以控制舞蹈暂停
+                                LogUtils.Logd(TAG,"isStart = false,lock.wait准备工作");
+                                synchronized (lock) {
+                                    try {
+                                        LogUtils.Logd(TAG,"lock.wait()");
+                                        lock.wait();
+                                    } catch (InterruptedException e) {
+                                        LogUtils.Logd(TAG,"lock.wait Exception"+e.toString());
+                                        e.printStackTrace();
+                                        mIsStop = true;
+                                    }
+                                }
+                            }
+                        if(mIsStop || !outControlStart){
+                            LogUtils.Logd(TAG,"stop dance,break for loop,outControlStart = "+outControlStart);
+                            return;
+                        }else{
+                            LogUtils.Logd(TAG,"mIsStop = "+mIsStop+",outControlStart = "+outControlStart+",objectID"+this.hashCode()+",ThreadName="+Thread.currentThread().getName());
+                        }
+                        JSONObject option = jsArray.getJSONObject(i);
+                        int mpart = option.optInt("part", 0);
+                        int mDirection = option.optInt("direction", 0);
+                        int mSpeed = option.optInt("speed", 4);
+                        int mAngle = option.optInt("angle", 0);
+                        int mledMode = option.optInt("ledMode", 0);
+                        //mode 灯开关模式：1关闭、2白色、3红色、4绿色、5粉色、6紫色、7蓝色、8黄色、
+                        // 0x12白色闪烁、0x13红色闪烁、0x14绿色闪烁、0x15粉色闪烁、0x16紫色闪烁、
+                        // 0x17蓝色闪烁、0x18黄色闪烁、0x19随机色闪烁、0x20三组随机流水闪烁
+
+                        int mledDelay = option.optInt("ledDelay", 0);
+                        int mledNumber = option.optInt("ledNumber", 0);
+                        //                        int msleep = option.optInt("sleep", 0);//1 表示100ms
+                        StringBuilder actionMsg = new StringBuilder();
+                        actionMsg.append("解析了一个动作：").append(mpart).append(",direction = ").append(mDirection)
+                                .append(",speed = ").append(mSpeed).append(",angle = ").append(mAngle)
+                                .append(",ledMode = ").append(mledMode).append(",ThreadName").append(Thread.currentThread().getName());
+                        LogUtils.Logd(TAG,actionMsg.toString());
+
+                        if(mpart==111){
+                            if(mDirection == 9||mDirection == 10){
+                                msleep = (int) (mAngle/5.0+0.5);//转圈的速度约为5.0度/100ms
+                            }else{
+                                if(mAngle>50 && mDanceType==1){
+                                    mAngle = 50;//跳舞时,最长移动距离小于50cm
+                                }
+                                msleep = (int) (mAngle/1.7+0.5);//1 表示100ms,直行的速度约为1.7cm/100ms
+                            }
+                            if(msleep <10){
+                                msleep = 10;
+                            }else if(msleep >800){
+                                msleep = 800;
+                            }
+                            LogUtils.Logd(TAG,"计算本次轮子运动的时间毫秒值："+msleep*100);
+                        }
+
+                        if (mpart == 0) {
+                            isStart = false;//暂停接受新的动作
+                            resetOnceGroupAction(msleep);
+                            if (msleep != 0)
+                                SystemClock.sleep(msleep * 100);
+                            isStart = true;
+                        } else {
+                            if (mpart == Constants.PART_HEAD) {
+                                LogUtils.Logd(TAG,"头部运动,方向："+mDirection+",速度:"+mSpeed+",角度："+mAngle);
+                                if(mDirection == 1){//垂直方向
+                                    if(mAngle < 7){
+                                        mAngle = 7;
+                                    }else if(mAngle >30){
+                                        mAngle = 30;
+                                    }
+                                    QiHanActionManager.getDefault().moveHead((byte)1,(byte)mSpeed,(short)mAngle);
+                                }else if(mDirection == 2){//水平方向
+                                    if(mAngle < 0){
+                                        mAngle = 0;
+                                    }else if(mAngle >180){
+                                        mAngle = 180;
+                                    }
+                                    QiHanActionManager.getDefault().moveHead((byte)0,(byte)mSpeed,(short)mAngle);
+                                }else if(mDirection == 3){//头部恢复正常,当头部mDirection == 3时，mAngle数字无效
+                                    QiHanActionManager.getDefault().moveHead((short)15,(short)90);
+                                }
+                            } else if (mpart == Constants.PART_HAND) {
+                                LogUtils.Logd(TAG,"手部运动,方向："+mDirection+",速度:"+mSpeed+",角度："+mAngle);
+                                if(mAngle > 270){
+                                    mAngle = 270;
+                                }else if(mAngle < 0){
+                                    mAngle = 0;
+                                }
+                                if (mDirection == 1) {//左手
+                                    QiHanActionManager.getDefault().moveHand((byte) 1, (byte) mSpeed, (short) mAngle);
+                                } else if (mDirection == 2) {//右手
+                                    QiHanActionManager.getDefault().moveHand((byte) 2, (byte) mSpeed, (short) mAngle);
+                                } else if (mDirection == 3) {//双手
+                                    QiHanActionManager.getDefault().moveHand((byte) 3, (byte) mSpeed, (short) mAngle);
+                                }
+                            } else if (mpart == Constants.PART_WHEEL) {
+                                mWheelIsAction = true;
+                                mWheelDirection = mDirection;
+                                mWheelSpeed = mSpeed;
+                                mWheelAngle = mAngle;
+                                LogUtils.Logd(TAG,"轮子运动,方向："+mWheelDirection+",速度:"+mWheelSpeed+",角度："+mWheelAngle);
+
+                                if(mWheelDirection == 9){
+                                    QiHanActionManager.getDefault(). turnWheel((byte)1,(short) mAngle);//左转
+                                }else if(mWheelDirection == 10){
+                                    QiHanActionManager.getDefault(). turnWheel((byte)2,(short)mAngle);//右转
+                                }else {//不后退除非是手机控制的
+                                    if(mWheelDirection != 2|| mDanceType == 0)
+                                        QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)mWheelDirection,(byte)3,(byte)mWheelAngle);
+                                }
+                            } else{
+                                LogUtils.Logd(TAG,"灯光模式：部位"+mpart+",模式:"+mledMode+",频率："+mledDelay+",数量"+mledNumber);
+                                if (mpart == Constants.PART_LEFT_HEAD_LED) {
+                                    ledSet(4, mledMode, mledDelay, mledNumber);
+                                } else if (mpart == Constants.PART_RIGHT_HEAD_LED) {
+                                    ledSet(5, mledMode, mledDelay, mledNumber);
+                                } else if (mpart == Constants.PART_LEFT_HAND_LED) {
+                                    ledSet(2, mledMode, mledDelay, mledNumber);
+                                } else if (mpart == Constants.PART_RIGHT_HAND_LED) {
+                                    ledSet(3, mledMode, mledDelay, mledNumber);
+                                } else if (mpart == Constants.PART_BOTTOM_LED) {
+                                    ledSet(1, mledMode, mledDelay, mledNumber);
+                                }
+                            }
+                        }
+                    }
+                    if(mDanceType == 0 ||mDanceType == 2){//如果mDanceType==0,就不循环执行动作了
+                        setStop(true);
+                    }
+                }
+            } catch (Exception e) {
+                LogUtils.Loge(TAG,"for loop Exception:"+e.toString());
+                if(mDanceType == 0||mDanceType == 2){
+                    setStop(true);
+                }
+            }
+        }
+    }
+
+    private void resetOnceGroupAction(int msleep) {
+        LogUtils.Logd(TAG,"休眠"+msleep*100+"毫秒");
+        if(msleep != 0)
+            SystemClock.sleep(msleep * 100);
+        if(mIsStop == true || !outControlStart){
+            LogUtils.Logd(TAG,"stop dance,resetOnceGroupAction cancel,outControlStart = "+outControlStart+",mIsStop = "+mIsStop);
+            return;
+        }else{
+            LogUtils.Logd(TAG,"mIsStop = "+mIsStop+",outControlStart = "+outControlStart+",mIsStop = "+mIsStop);
+        }
+        LogUtils.Logd(TAG,"开始轮子复位动作，mWheelDirection = "+mWheelDirection+",mWheelSpeed = "+mWheelSpeed+",mWheelAngle = "+mWheelAngle);
+        if(mWheelIsAction){
+            processResetWheelAction(mWheelDirection,mWheelSpeed,mWheelAngle);
+        }
+        QiHanActionManager.getDefault().resetHandAction();
+        QiHanActionManager.getDefault().resetHeadAction();
+        mWheelIsAction = false;
+    }
+
+    private void ledSet(int i, int mledMode, int mledDelay, int mledNumber) {
+        QiHanActionManager.getDefault().switchLedLight((byte)i,(byte)mledMode,(byte)mledDelay,(byte)mledNumber);
+    }
+
+    private void processResetWheelAction(int mDirection, int mSpeed, int mAngle) {
+        LogUtils.Logd(TAG,"执行轮子的复位命令 mDirection = "+mDirection+",mSpeed = "+mSpeed+",mAngle = "+mAngle);
+        if(mAngle > 50 && mDirection != 9 && mDirection != 10 ){
+            mAngle = 50;
+        }
+        switch (mDirection) {
+            case 1://前进
+                if(mDanceType == 0){//只有手机控制时才允许后退
+                    QiHanActionManager.getDefault().moveWheelWithDistance((byte)1,(byte)2,(byte)mSpeed,(byte)mAngle);
+                }
+                break;
+            case 2://后退
+                QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)1,(byte)3,(byte)mAngle);
+                break;
+            case 3://左前
+                QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)4,(byte)3,(byte)mAngle);
+                break;
+            case 4://左后
+                QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)3,(byte)3,(byte)mAngle);
+                break;
+            case 5://右前
+                QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)6,(byte)3,(byte)mAngle);
+                break;
+            case 6://右后
+                QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)5,(byte)3,(byte)mAngle);
+                break;
+            case 7://左平移
+                QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)8,(byte)3,(byte)mAngle);
+                break;
+            case 8://右平移
+                QiHanActionManager.getDefault().moveWheelWithDistance((byte)0x11,(byte)7,(byte)3,(byte)mAngle);
+                break;
+            case 9://左转
+                QiHanActionManager.getDefault(). turnWheel((byte)2,(short) mAngle);
+                break;
+            case 10://右转
+                QiHanActionManager.getDefault(). turnWheel((byte)1,(short)mAngle);
+                break;
+            default:
+                break;
+        }
+    }
+}

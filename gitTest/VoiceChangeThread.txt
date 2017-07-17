@@ -1,0 +1,251 @@
+package com.qihan.childteach.util;
+
+import com.qihan.childteach.app.MyApplication;
+import com.qihan.childteach.config.Constants;
+import com.qihan.childteach.model.entity.CreateEditBean;
+import com.qihan.childteach.model.entity.VoiceChangeBean;
+import com.qihan.childteach.voice.QiHanVoiceManager1;
+
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import github.com.stonevoicer.VoicerUtil;
+
+
+/**
+ * 创建者     彭猛
+ * 创建时间   2017/5/17 10:54
+ * 描述	     TODO
+ * 更新者     Author
+ * 更新时间   Date
+ * 更新描述   TODO
+ */
+public class VoiceChangeThread extends Thread {
+
+    private static final String TAG = "VOICE_CHANGE";
+    private static final int TIME_WAIT_RECORDING = 200;
+    public int mWhichVoice;
+    private VoiceChangeBean mBean;
+    private volatile boolean isStop;
+    private volatile boolean mIsPause;
+    Object lock = new Object();
+    private OnVoiceManagerListener mOnVoiceManagerListener;
+    private DanceThread mDanceThread;
+
+    /**
+     * @param voiceType
+     */
+    public VoiceChangeThread(int voiceType){
+        this.mWhichVoice = voiceType;
+    }
+    public VoiceChangeThread(){
+
+    }
+
+    public void setListener(OnVoiceManagerListener onVoiceManagerListener){
+        this.mOnVoiceManagerListener = onVoiceManagerListener;
+    }
+    public void setStop(boolean isSetStop){
+        isStop = isSetStop;
+//        interrupt();
+    }
+    @Override
+    public void run() {
+       //从队列里面拿一段文本出来，一段一段处理
+        try {
+            while(!isStop){
+                if(mIsPause){
+                    LogUtils.Logv(TAG,"暂停变声");
+                    synchronized (lock) {
+                        try {
+                            LogUtils.Logd(TAG,"变声lock.wait()");
+                            lock.wait();
+                        } catch (InterruptedException e) {
+                            LogUtils.Logd(TAG,"变声lock.wait Exception"+e.toString());
+                            e.printStackTrace();
+                        }
+                    }
+                }
+                VoiceChangeBean bean = VoiceChangeManager.getInstance().getVoiceChangeQueue().poll(TIME_WAIT_RECORDING, TimeUnit.MILLISECONDS);
+                if(bean != null){
+                    processNextData2(bean);
+                }
+            }
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private String getSynthesiseFile(int i) {
+        return QiHanVoiceManager1.getDefault().getSynthesiseFile(i);
+    }
+
+    private void processNextData2(final VoiceChangeBean bean) {//线程类执行
+        String synthesiseFile = getSynthesiseFile(bean.num);
+        LogUtils.Logi(TAG,"开始变声：变声角色:"+bean.tone+",变声内容："+bean.content+",变声文件："+synthesiseFile+",当前线程名:"+Thread.currentThread().getName());
+        detecteShouldDoAction(bean);
+        switch (bean.tone) {
+            case Constants.STONE_NORMAL:
+            case Constants.STONE_XIAOWANZI:
+            case Constants.STONE_TANGLAOYA:
+            case Constants.STONE_XIAOXIN  :
+            case Constants.STONE_YEFANG   :
+            case Constants.STONE_LAOYEYE  :
+            case Constants.STONE_DALONG   :
+            case Constants.STONE_NANNAN   :
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_NORMAL);//改成小梦的声音
+                break;
+            case Constants.STONE_LUOLI:
+//                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_LUOLI);
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_NORMAL);//改成女童声
+                break;
+            case Constants.STONE_DASHU:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_DASHU);
+                break;
+            case Constants.STONE_JINGSONG:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_JINGSONG);
+                break;
+            case Constants.STONE_GAOGUAI:
+//                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_GAOGUAI);
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_NORMAL);//用科大讯飞的声音替换
+                break;
+            case Constants.STONE_KONGLING:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_KONGLING);
+                break;
+            case Constants.STONE_PAUSE:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_PAUSE);
+                break;
+            case Constants.STONE_SFXREVERB:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_SFXREVERB);//混响效果
+                break;
+            case Constants.STONE_CHORUS:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_CHORUS);//合唱效果
+                break;
+            case Constants.STONE_TREMOLO:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_TREMOLO);//颤音斩波效果
+                break;
+            case Constants.STONE_FLANGE:
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_FLANGE);//法兰效果
+                break;
+            default:
+                LogUtils.Logw(TAG,"获取的bean中没有获取到对应的这个角色:"+bean.tone);
+                VoicerUtil.fix(synthesiseFile, VoicerUtil.MODE_NORMAL);
+                break;
+        }
+        boolean isDeleteSuccess = QiHanVoiceManager1.getDefault().deleteLastSynthesiseFile(bean.num - 1);
+        LogUtils.Logd(TAG,"删除上一个文件是否成功"+isDeleteSuccess);
+
+        int size = VoiceChangeManager.getInstance().getVoiceChangeQueue().size();
+        LogUtils.Logd(TAG,"队列数据长度："+ size);
+        if(size == 0){
+            if(mOnVoiceManagerListener != null){
+                mOnVoiceManagerListener.changeVoiceLastOne(bean);
+            }else{
+                LogUtils.Logd(TAG,"变声最后一个文件时OnVoiceManagerListener为空");
+            }
+        }
+    }
+
+    private void detecteShouldDoAction(VoiceChangeBean mVoiceChangeBean) {
+        boolean endLood = false;
+        String trigerTxt = null;
+        int moveNum = 0;
+        String movePack = null;
+        try {
+            if(MyApplication.moveList == null || MyApplication.moveList.size() <= 0){
+                LogUtils.Logd(TAG,"动作数据为空或者舞蹈数据为空,不做动作");
+                return;
+            }
+            for (int i = 0; i < MyApplication.moveList.size(); i++) {
+                CreateEditBean.DataBean.DatasBean.MovesBean movesBean = MyApplication.moveList.get(i);
+                if(movesBean.getTrigers().size() <= 0){
+                    continue;
+                }
+                List<String> trigers1 = movesBean.getTrigers();
+                if(trigers1 ==null || trigers1.size()==0){
+                    LogUtils.Logd(TAG,"没有设置触发关键字,不做动作");
+                    continue;
+                }
+                for (int j = 0; j < trigers1.size(); j++) {
+                    LogUtils.Logd(TAG,"动作触发词有"+j+":"+trigers1.get(j));
+                    if(!StringUtils.isEmpty(trigers1.get(j))){
+                        if(mVoiceChangeBean.content.contains(trigers1.get(j))){
+                            trigerTxt = trigers1.get(j);
+                            LogUtils.Logi(TAG,trigerTxt+":触发了动作的关键字");
+                            endLood = true;
+                            moveNum = i;
+                            break;
+                        }
+                    }
+                }
+                if(endLood){
+                    LogUtils.Logi(TAG,"找到关键词:"+trigerTxt);
+                    movePack = MyApplication.moveList.get(moveNum).getMovePack();
+                    LogUtils.Logi(TAG,"找到关键词对应的动作:"+ movePack);
+                    break;
+                }
+            }
+
+            if(StringUtils.isEmpty(trigerTxt) || StringUtils.isEmpty(movePack)){
+                LogUtils.Logv(TAG,"动作或关键词为空");
+                return;
+            }
+            long unitTime = 0;
+            final String tone = mVoiceChangeBean.tone;
+            switch (tone) {
+                default:
+                    unitTime = 250;
+                    break;
+            }
+            int length = mVoiceChangeBean.content.length();
+
+            LogUtils.Logd("VOICE_CHANGE", "mVoiceChangeBean.content:" + mVoiceChangeBean.content);
+            long lastTime = unitTime * length;//计算说完整段话的毫秒值
+            LogUtils.Logd(TAG,"计算出这句话播放时长"+lastTime);
+
+            int i = mVoiceChangeBean.content.lastIndexOf(trigerTxt);//触发文本在整段文本的位置
+            if(i <0){
+                LogUtils.Logd(TAG,"没有在文本中找到动作触发关键字的位置");
+                return;
+            }
+                long trigerPercent = i*lastTime/length;
+                LogUtils.Logi(TAG,"触发关键字位置="+i+",总字符数="+length+",总时长="+lastTime+",延迟时间"+trigerPercent);
+            final String finalMovePack = movePack;
+            MyApplication.getMainThreadHandler().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if(mDanceThread != null){
+                        mDanceThread.setStop(true);
+                        mDanceThread = null;
+                    }
+                    mDanceThread = new DanceThread(2, finalMovePack);
+                    mDanceThread.start();
+                }
+                },trigerPercent);
+        } catch (Exception e) {
+            LogUtils.Logd(TAG,"变声做动作时异常"+e.toString());
+            e.printStackTrace();
+        }
+    }
+
+    public void setPauseState(boolean isPause) {
+        LogUtils.Logd(TAG,"setPauseState:"+isPause);
+        mIsPause = isPause;
+        if(!mIsPause){
+            LogUtils.Logd(TAG,"释放锁，继续变声");
+            synchronized (lock) {
+                try {
+                    lock.notify();
+                    LogUtils.Logd(TAG,"变声setPauseState ,lock.notify()");
+                } catch (Exception e) {
+                    LogUtils.Logw(TAG,"变声lock.notify() Exception"+e.toString());
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+    public boolean getPauseState(){
+        LogUtils.Logd(TAG,"getPauseState:mIsPause = "+mIsPause);
+        return mIsPause;
+    }
+}

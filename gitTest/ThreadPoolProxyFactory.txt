@@ -1,0 +1,43 @@
+package com.qihan.childteach.util;
+
+/**
+ * 创建者     彭猛
+ * 创建时间   2016/5/5 10:11
+ * 描述	      创建2种类型的ThreadPoolProxy
+ * <p/>
+ * 更新者     $Author: admin $
+ * 更新时间   $Date: 2016-05-05 10:19:11 +0800 (星期四, 05 五月 2016) $
+ * 更新描述   ${TODO}
+ */
+public class ThreadPoolProxyFactory {
+    static ThreadPoolProxy mNormalThreadPoolProxy;
+    static ThreadPoolProxy mDownloadThreadPoolProxy;
+
+    /**
+     * 得到普通线程池的代理对象
+     */
+    public static ThreadPoolProxy getNormalThreadPoolProxy() {
+        if (mNormalThreadPoolProxy == null) {
+            synchronized (ThreadPoolProxyFactory.class) {
+                if (mNormalThreadPoolProxy == null) {
+                    mNormalThreadPoolProxy = new ThreadPoolProxy(5, 5);
+                }
+            }
+        }
+        return mNormalThreadPoolProxy;
+    }
+
+    /**
+     * 得到下载任务需要的线程池的代理对象
+     */
+    public static ThreadPoolProxy getDownloadThreadPoolProxy() {
+        if (mDownloadThreadPoolProxy == null) {
+            synchronized (ThreadPoolProxyFactory.class) {
+                if (mDownloadThreadPoolProxy == null) {
+                    mDownloadThreadPoolProxy = new ThreadPoolProxy(3, 3);
+                }
+            }
+        }
+        return mDownloadThreadPoolProxy;
+    }
+}
